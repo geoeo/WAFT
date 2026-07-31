@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import timm
 import math
+import os
 
 import sys
 from model.backbone.patch_embed import PatchEmbed
@@ -18,9 +19,10 @@ MODEL_CONFIGS = {
 class VisionTransformer(nn.Module):
     def __init__(self, model_name, input_dim, patch_size=16):
         super(VisionTransformer, self).__init__()
+        use_timm_pretrained = os.environ.get("WAFT_USE_TIMM_PRETRAINED", "0") == "1"
         model = timm.create_model(
             MODEL_CONFIGS[model_name]['encoder'],
-            pretrained=True,
+            pretrained=use_timm_pretrained,
             num_classes=0,  # remove classifier nn.Linear
         )
         self.intermediate_layer_idx = {

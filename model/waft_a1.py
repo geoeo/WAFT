@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import math
+import os
 import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,11 +34,12 @@ class ResNet18Deconv(nn.Module):
     def __init__(self, inp, oup):
         super(ResNet18Deconv, self).__init__()
         self.feature_dims = [64, 128, 256, 512]
+        use_timm_pretrained = os.environ.get("WAFT_USE_TIMM_PRETRAINED", "0") == "1"
         self.ds1 = resconv(inp, 64, k=7, s=2)
-        self.conv1 = timm.create_model("resnet18.a3_in1k", pretrained=True, features_only=True).layer1
-        self.conv2 = timm.create_model("resnet18.a3_in1k", pretrained=True, features_only=True).layer2
-        self.conv3 = timm.create_model("resnet18.a3_in1k", pretrained=True, features_only=True).layer3
-        self.conv4 = timm.create_model("resnet18.a3_in1k", pretrained=True, features_only=True).layer4
+        self.conv1 = timm.create_model("resnet18.a3_in1k", pretrained=use_timm_pretrained, features_only=True).layer1
+        self.conv2 = timm.create_model("resnet18.a3_in1k", pretrained=use_timm_pretrained, features_only=True).layer2
+        self.conv3 = timm.create_model("resnet18.a3_in1k", pretrained=use_timm_pretrained, features_only=True).layer3
+        self.conv4 = timm.create_model("resnet18.a3_in1k", pretrained=use_timm_pretrained, features_only=True).layer4
         self.up_4 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2, padding=0, bias=True)
         self.proj_3 = resconv(256, 256, k=3, s=1)
         self.up_3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2, padding=0, bias=True)

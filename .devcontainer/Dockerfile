@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	curl \
 	ca-certificates \
 	bzip2 \
+	libgl1 \
+	libglib2.0-0 \
+	libsm6 \
+	libxext6 \
+	libxrender1 \
 	&& locale-gen en_US.UTF-8 \
 	&& update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
 	&& rm -rf /var/lib/apt/lists/*
@@ -27,8 +32,11 @@ RUN curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_6
 	&& conda install -y -n base pip \
 	&& conda clean -afy
 
-RUN pip install --no-cache-dir --upgrade pip \
-	&& pip install --no-cache-dir --upgrade torch torchvision xformers --index-url https://download.pytorch.org/whl/${TORCH_CUDA}
+RUN conda create -y -n waft python=3.12 \
+	&& conda clean -afy
+
+RUN conda run -n waft pip install --no-cache-dir --upgrade pip \
+	&& conda run -n waft pip install --no-cache-dir torch torchvision xformers --index-url https://download.pytorch.org/whl/${TORCH_CUDA}
 
 COPY host_groups /
 

@@ -20,7 +20,11 @@ class DepthAnythingFeature(nn.Module):
         self.encoder = encoder
         depth_anything = DepthAnythingV2(**self.model_configs[encoder])
         if pretrained:
-            depth_anything.load_state_dict(torch.load(f'depth-anything-ckpts/depth_anything_v2_{encoder}.pth', map_location='cpu'))
+            ckpt_path = f'depth-anything-ckpts/depth_anything_v2_{encoder}.pth'
+            if os.path.exists(ckpt_path):
+                depth_anything.load_state_dict(torch.load(ckpt_path, map_location='cpu'))
+            else:
+                print(f"Warning: missing {ckpt_path}; continuing without local DepthAnything preload.")
         self.depth_anything = depth_anything
 
 

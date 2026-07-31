@@ -1,5 +1,3 @@
-import sys
-sys.path.append('core')
 import argparse
 import os
 import cv2
@@ -13,8 +11,8 @@ import torch.utils.data as data
 
 from config.parser import parse_args
 
-import datasets
-from raft import RAFT
+from model import fetch_model
+from inference_tools import InferenceWrapper
 from utils.flow_viz import flow_to_image
 from utils.utils import load_ckpt
 
@@ -76,19 +74,21 @@ def get_heatmap(info, args):
     heatmap = (log_b * weight).sum(dim=1, keepdim=True)
     return heatmap
 
-def forward_flow(args, model, image1, image2):
-    output = model(image1, image2, iters=args.iters, test_mode=True)
+def forward_flow(model, image1, image2):
+    output = model.calc_flow(image1, image2)
     flow_final = output['flow'][-1]
-    info_final = output['info'][-1]
+    info_final = output['info'][-1] if 'info' in output else None
     return flow_final, info_final
 
 def calc_flow(args, model, image1, image2):
     img1 = F.interpolate(image1, scale_factor=2 ** args.scale, mode='bilinear', align_corners=False)
     img2 = F.interpolate(image2, scale_factor=2 ** args.scale, mode='bilinear', align_corners=False)
     H, W = img1.shape[2:]
-    flow, info = forward_flow(args, model, img1, img2)
+    flow, info = forward_flow(model, img1, img2)
     flow_down = F.interpolate(flow, scale_factor=0.5 ** args.scale, mode='bilinear', align_corners=False) * (0.5 ** args.scale)
-    info_down = F.interpolate(info, scale_factor=0.5 ** args.scale, mode='area')
+    info_down = None
+    if info is not None:
+        info_down = F.interpolate(info, scale_factor=0.5 ** args.scale, mode='area')
     return flow_down, info_down
 
 @torch.no_grad()
@@ -98,8 +98,9 @@ def demo_data(path, args, model, image1, image2):
     flow, info = calc_flow(args, model, image1, image2)
     flow_vis = flow_to_image(flow[0].permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
     cv2.imwrite(f"{path}flow.jpg", flow_vis)
-    heatmap = get_heatmap(info, args)
-    vis_heatmap(f"{path}heatmap.jpg", image1[0].permute(1, 2, 0).cpu().numpy(), heatmap[0].permute(1, 2, 0).cpu().numpy())
+    if info is not None:
+        heatmap = get_heatmap(info, args)
+        vis_heatmap(f"{path}heatmap.jpg", image1[0].permute(1, 2, 0).cpu().numpy(), heatmap[0].permute(1, 2, 0).cpu().numpy())
 
 @torch.no_grad()
 def demo_custom(model, args, device=torch.device('cuda')):
@@ -117,17 +118,11 @@ def demo_custom(model, args, device=torch.device('cuda')):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', help='experiment configure file name', required=True, type=str)
-    parser.add_argument('--path', help='checkpoint path', type=str, default=None)
-    parser.add_argument('--url', help='checkpoint url', type=str, default=None)
+    parser.add_argument('--ckpt', help='checkpoint path', required=True, type=str)
     parser.add_argument('--device', help='inference device', type=str, default='cpu')
     args = parse_args(parser)
-    if args.path is None and args.url is None:
-        raise ValueError("Either --path or --url must be provided")
-    if args.path is not None:
-        model = RAFT(args)
-        load_ckpt(model, args.path)
-    else:
-        model = RAFT.from_pretrained(args.url, args=args)
+    model = fetch_model(args)
+    load_ckpt(model, args.ckpt)
         
     if args.device == 'cuda':
         device = torch.device('cuda')
@@ -135,7 +130,8 @@ def main():
         device = torch.device('cpu')
     model = model.to(device)
     model.eval()
-    demo_custom(model, args, device=device)
+    wrapped_model = InferenceWrapper(model, scale=0, train_size=args.image_size, pad_to_train_size=False, tiling=False)
+    demo_custom(wrapped_model, args, device=device)
 
 if __name__ == '__main__':
     main()
