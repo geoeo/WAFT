@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Evaluate WAFT on realm_1_100m_w_tandem",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/evaluate.py",
+            "python": "/opt/conda/envs/waft/bin/python",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "--cfg", "config/a1/tar.json",
+                "--ckpt", "weights/tar-c-t.pth",
+                "--dataset", "realm",
+                "--data_root", "custom/realm_1_100m_w_tandem",
+                "--output_path", "outputs/realm_1_100m_w_tandem"
+            ]
+        }
+    ]
+}

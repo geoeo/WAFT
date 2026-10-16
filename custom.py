@@ -104,9 +104,9 @@ def demo_data(path, args, model, image1, image2):
 
 @torch.no_grad()
 def demo_custom(model, args, device=torch.device('cuda')):
-    image1 = cv2.imread("./custom/image1.jpg")
+    image1 = cv2.imread("./custom/air_1_rot.png")
     image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2RGB)
-    image2 = cv2.imread("./custom/image2.jpg")
+    image2 = cv2.imread("./custom/air_2_rot.png")
     image2 = cv2.cvtColor(image2, cv2.COLOR_BGR2RGB)
     image1 = torch.tensor(image1, dtype=torch.float32).permute(2, 0, 1)
     image2 = torch.tensor(image2, dtype=torch.float32).permute(2, 0, 1)

@@ -23,3 +23,9 @@ depth-anything-ckpts/
 *.npz
 *log*
 *hypersim_stats.json*
+custom/*
+!custom/.gitkeep
+outputs/*
+!outputs/.gitkeep
+.agents/*
+.agents/.gitkeep

@@ -72,6 +72,12 @@ python evaluate --cfg config/a2/twins/chairs-things.json --ckpt ckpts/twins/zero
 python submission --cfg config/a2/twins/tar-c-t-kitti.json --ckpt ckpts/twins/kitti.pth --dataset kitti
 ```
 
+To run WAFT over an OpenREALM keyframe sequence (images, `intrinsics.txt` and `kf_traj.txt`; no flow ground truth, so raw flow, visualisations, uncertainty heatmaps and per-pair statistics are written to `outputs/<sequence name>`):
+
+```Shell
+python evaluate.py --cfg config/a1/tar.json --ckpt weights/tar-c-t.pth --dataset realm --data_root custom/realm_1_100m_w_tandem
+```
+
 ## Acknowledgements
 
 This project relies on code from existing repositories: [RAFT](https://github.com/princeton-vl/RAFT), [DPT](https://github.com/isl-org/DPT), [Flowformer](https://github.com/drinkingcoder/FlowFormer-Official), [ptlflow](https://github.com/hmorimitsu/ptlflow), [DepthAnythingV2](https://github.com/DepthAnything/Depth-Anything-V2), and [DINOv3](https://ai.meta.com/dinov3/). We thank the original authors for their excellent work.
