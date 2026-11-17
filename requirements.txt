@@ -15,3 +15,4 @@ torchvision
 timm
 wandb
 xformers
+rosbags

@@ -1,8 +1,12 @@
-# CUDA 12.8 is the project target in README.
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS build
+# Devcontainer target: Ubuntu 24.04, CUDA 13.4, PyTorch 2.15.
+FROM nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04 AS build
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG TORCH_CUDA=cu128
+ARG TORCH_CUDA=cu134
+# Keep these three in step: torchvision and xformers are built against a specific torch.
+ARG TORCH_VERSION=2.15.0
+ARG TORCHVISION_VERSION=0.29.2
+ARG XFORMERS_VERSION=0.0.36
 
 ENV CONDA_DIR=/opt/conda
 ENV PATH=${CONDA_DIR}/bin:${PATH}
@@ -36,7 +40,9 @@ RUN conda create -y -n waft python=3.12 \
 	&& conda clean -afy
 
 RUN conda run -n waft pip install --no-cache-dir --upgrade pip \
-	&& conda run -n waft pip install --no-cache-dir torch torchvision xformers --index-url https://download.pytorch.org/whl/${TORCH_CUDA}
+	&& conda run -n waft pip install --no-cache-dir \
+		torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} xformers==${XFORMERS_VERSION} \
+		--index-url https://download.pytorch.org/whl/${TORCH_CUDA}
 
 COPY host_groups /
 

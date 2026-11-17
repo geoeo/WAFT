@@ -78,6 +78,12 @@ To run WAFT over an OpenREALM keyframe sequence (images, `intrinsics.txt` and `k
 python evaluate.py --cfg config/a1/tar.json --ckpt weights/tar-c-t.pth --dataset realm --data_root custom/realm_1_100m_w_tandem
 ```
 
+To run WAFT offline over the camera images of an OpenREALM rosbag2 recording (read straight from the bag files, no ROS needed; colour-coded flow, flow arrows, uncertainty heatmaps and per-pair statistics are written to `outputs/<bag name>`, raw flow with `--save_flow`; images are undistorted with the camera intrinsics hardcoded in the script, `--no_undistort` turns that off; `--resolution WIDTHxHEIGHT` then resizes them, flow is in pixels of that size; the output folder is emptied before each run unless `--no_clean` is given):
+
+```Shell
+python dataloader/flow/openrealm.py --cfg config/a1/tar.json --ckpt weights/tar-c-t.pth --resolution 640x480 --bag /bags/2025_10_15-Guenselsdorf-rec/seq0/bags/all/rosbag2_2025_10_15-09_49_48_eight
+```
+
 ## Acknowledgements
 
 This project relies on code from existing repositories: [RAFT](https://github.com/princeton-vl/RAFT), [DPT](https://github.com/isl-org/DPT), [Flowformer](https://github.com/drinkingcoder/FlowFormer-Official), [ptlflow](https://github.com/hmorimitsu/ptlflow), [DepthAnythingV2](https://github.com/DepthAnything/Depth-Anything-V2), and [DINOv3](https://ai.meta.com/dinov3/). We thank the original authors for their excellent work.

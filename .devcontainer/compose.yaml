@@ -9,6 +9,9 @@ services:
       - type: bind
         source: ..
         target: /workspaces
+      - type: bind
+        source: /home/marc/Datasets/AIT/rosbags/openrealm/
+        target: /bags
     privileged: true
     network_mode: host
     ipc: host
