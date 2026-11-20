@@ -12,6 +12,8 @@ The images are undistorted with the camera intrinsics hardcoded below (--no_undi
 that off). Per image pair three images are written to outputs/<bag name>: the colour-coded
 flow, the flow of a grid of pixels drawn as arrows, and the uncertainty heatmap, together with
 a stats.csv. Pass --save_flow to also keep the raw flow.
+--precision selects the arithmetic mode the network runs in (default: torch's own flags;
+fp32, tf32 or fp16 for float16 autocast, see utils/precision.py).
 Everything already in that output folder is deleted before the run (--no_clean keeps it).
 """
 import argparse
@@ -275,6 +277,7 @@ def main():
     from config.parser import parse_args
     from inference_tools import InferenceWrapper
     from model import fetch_model
+    from utils.precision import MODES, describe_precision, is_half, set_precision
     from utils.utils import load_ckpt
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -296,6 +299,7 @@ def main():
     parser.add_argument('--arrow_step', help='spacing of the arrows in the arrow image: a fraction of the image width if below 1, '
                         'otherwise pixels (default: %(default)s, i.e. 1/20 of the image width)', default=DEFAULT_ARROW_STEP, type=float)
     parser.add_argument('--device', help='inference device', default='cuda', type=str)
+    parser.add_argument('--precision', help="arithmetic mode (utils/precision.py). default: torch's own flags, as before. fp32: full fp32. tf32: TF32 everywhere. fp16: float16 autocast, about twice as fast as fp32 and about 0.01 px from it on average; needs a CUDA device", choices=MODES, default='default', type=str)
     args = parse_args(parser)
 
     dataset = OpenRealmBag(args.bag, topic=args.topic, skip=args.skip, stride=args.stride, max_pairs=getattr(args, 'max_pairs', None),
@@ -308,11 +312,16 @@ def main():
 
     args.gpus = [0]
     device = torch.device(args.device)
+    if is_half(args.precision) and device.type != 'cuda':
+        parser.error('--precision fp16 needs --device cuda')
+    set_precision(args.precision)
+    print(f"precision: {args.precision} ({describe_precision()})")
     model = fetch_model(args)
     load_ckpt(model, args.ckpt)
     model = model.to(device)
     model.eval()
-    wrapped_model = InferenceWrapper(model, scale=args.scale, train_size=args.image_size, pad_to_train_size=False, tiling=False)
+    wrapped_model = InferenceWrapper(model, scale=args.scale, train_size=args.image_size, pad_to_train_size=False, tiling=False,
+                                     half=is_half(args.precision))
 
     # parse_args drops options that were not given, so the optional ones are read with getattr
     output_path = getattr(args, 'output_path', None) or osp.join('outputs', osp.basename(osp.normpath(args.bag)))

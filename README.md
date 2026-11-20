@@ -90,6 +90,8 @@ To follow a grid of pixels through several consecutive images of such a recordin
 python scripts/flow_paths.py --skip 3000 --num_images 5
 ```
 
+`evaluate.py`, `custom.py`, `dataloader/flow/openrealm.py` and `scripts/flow_paths.py` take `--precision default|fp32|tf32|fp16` ([utils/precision.py](utils/precision.py)); `default` leaves torch's flags alone, `fp16` runs the network under float16 autocast.
+
 ## AOT export
 
 The flow network can be compiled ahead of time with `torch.export` + AOTInductor into a single self-contained `.pt2` package that runs without the Python model code, from Python (`torch._inductor.aoti_load_package`) or C++ (`torch::inductor::AOTIModelPackageLoader`). The scripts live in [scripts/](scripts) and run inside the devcontainer; from the host, the whole chain is
@@ -100,6 +102,12 @@ devcontainer exec --workspace-folder . bash scripts/run_aot_export_chain.sh
 
 (inside the container: `bash scripts/run_aot_export_chain.sh`). The [script](scripts/run_aot_export_chain.sh) uses GPU 0 and `/opt/conda/envs/waft/bin/python`; set `PYTHON` to use another interpreter. It builds for 640x480 images; set `RESOLUTION` (e.g. `RESOLUTION=1024x768`) for another size, which resizes the pairs and moves the build to `outputs/aoti/fp32_<RESOLUTION>/`. All four steps run under `--precision fp32`; pass `--precision tf32` or `--precision default` to the script to run them under another float32 mode. The build directory carries that mode in its name, `outputs/aoti/<precision>_<RESOLUTION>/`, although the package itself does not depend on it (see below). It works from any working directory, stops if a step fails, and replaces what earlier runs left at its output locations. Its four steps are also available as VS Code launch configurations:
 
+`ITERS` sets the number of refinement iterations (default: the cfg's 5), and `--precision fp16` builds a float16 package; with `ITERS` the snapshot and the build directory end in `_t<ITERS>`:
+
+```Shell
+RESOLUTION=448x336 ITERS=3 bash scripts/run_aot_export_chain.sh --precision fp16
+```
+
 | Step | Script | Writes |
 |---|---|---|
 | Export Dataset (.pt2) | `scripts/export_dataset.py` | `outputs/dataset_flow_realm_1_100m_fp32.pt2` (the name ends in the `--precision` the chain ran under, since the stored eager flow depends on it): the first 3 keyframe pairs of `custom/realm_1_100m_w_tandem`, resized to 640x480, as input tensors, plus the eager model's flow for them |
@@ -109,12 +117,13 @@ devcontainer exec --workspace-folder . bash scripts/run_aot_export_chain.sh
 
 `scripts/export_flow_model.py` additionally saves the intermediate `torch.export` graph for inspection; nothing consumes it.
 
-The package signature is `flow, info = model(image1, image2)`: two `[1, 3, H, W]` float32 RGB images in 0..255, giving the flow `[1, 2, H, W]` in pixels and the raw uncertainty head `[1, 4, H, W]` (`custom.get_heatmap` turns it into the heatmap). Things to know:
+The package signature is `flow, alpha1, log_b0 = model(image1, image2)`: two `[1, 3, H, W]` float32 RGB images in 0..255, giving the flow `[1, 2, H, W]` in pixels and two `[1, 1, H, W]` confidence maps taken from the uncertainty head: `alpha1`, the weight of the tight mixture component (scale 1 px), and `log_b0`, the clamped log-scale of the wide one. The softmax and the clamp are inside the package; the uncertainty heatmap is `(1 - alpha1) * log_b0`. Packages built with the earlier `flow, info` signature have to be rebuilt. Things to know:
 
 - **One package per image size.** H, W, the batch size of 1 and the number of refinement iterations are baked in. Compile for another size with `--resolution WIDTHxHEIGHT`; pairs can come from a keyframe sequence (`--data_root`) or a rosbag (`--bag`), as for the scripts above. Feeding a package another size is not a clean error, it fails inside cuDNN, so `run_flow_aoti.py` checks the size against `build_info.json` first.
 - **Inputs must be contiguous.** The package reads its inputs with the memory layout of the tracing example, which these scripts fix to plain contiguous `[1, 3, H, W]`, and it does not check. A tensor of the same shape with other strides gives wrong flow without any error. Beware that `torch.from_numpy(hwc_image).permute(2, 0, 1).float()`, as the dataloaders here build their images, is such a tensor (channels-last strides); call `.contiguous()` on it. `run_flow_aoti.py` and `evaluate_flow_aoti.py` do, and refuse packages built before this was fixed.
 - **One package per torch version.** A package is locked to the torch that compiled it; recompile after an upgrade.
 - **Precision is chosen at run time, not at compile time.** The same package computes in whichever float32 mode the loading process is in: `--precision fp32` (default of these scripts), `tf32`, or `default` (torch's own defaults: TF32 convolutions, fp32 matmul, which is what `evaluate.py` runs under). Between modes the flow moves by about 0.01 px on average and by whole pixels in a few spots of large-motion pairs (this is the model's own sensitivity to TF32 rounding and applies to the eager pipeline just the same), so compare like with like; a C++ consumer sets the mode through `at::globalContext()`, see [utils/precision.py](utils/precision.py).
+- **Float16 is the exception: it is chosen at compile time.** `--precision fp16` exports the model under float16 autocast, so the package computes in float16 whatever the loading process sets (`build_info.json`: `"compute_dtype": "float16"`); inputs and outputs stay float32. Run and evaluate it with `--precision fp16`. Against the fp32 eager model it is about 0.01 px off on average, single pixels up to a few pixels, and about twice as fast as the fp32 package.
 - **Accuracy.** Under fp32 the package reproduces the eager model it was compiled from to 2.5e-05 px mean / 1.4e-02 px max endpoint error (twelve 640x480 pairs, RTX 3060, torch 2.15.0). The full table, including the distance to what `evaluate.py` produces, is in the docstring of [scripts/aot_compile_flow.py](scripts/aot_compile_flow.py).
 - **Speed.** The package is 10 to 12% faster than the eager model in every precision mode: 298 ms per pair against 336 ms under fp32. That relies on `--layout_optimization off`, the default of `aot_compile_flow.py`: inductor's own default of rewriting convolutions to channels-last costs this model 47 ms per pair under fp32 (345 ms, slower than eager) and gains nothing in the other modes. `--layout_optimization on` restores it; `build_info.json` records which one a package was built with.
 - **Export-safe substitutions.** While exporting, xformers attention is replaced by plain attention and the cuDNN grid sampler by `aten.grid_sampler_2d` (see [scripts/flow_export_common.py](scripts/flow_export_common.py) and [utils/export_compat.py](utils/export_compat.py)). Both are switched on by environment variables that only the export scripts set; the normal pipeline is unchanged.

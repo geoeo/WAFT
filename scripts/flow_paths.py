@@ -27,6 +27,9 @@ image and its path stays as it is in the later images.
 Outputs go to outputs/<bag name>_flow_paths_skip<skip> (--output_path), so runs that
 start at different places in the bag do not overwrite each other. The folder is emptied
 first unless --no_clean is given.
+
+--precision selects the arithmetic mode the network runs in (default: torch's own flags;
+fp32, tf32 or fp16 for float16 autocast, see utils/precision.py).
 """
 
 import argparse
@@ -155,6 +158,7 @@ def main():
     from config.parser import json_to_args
     from inference_tools import InferenceWrapper
     from model import fetch_model
+    from utils.precision import MODES, describe_precision, is_half, set_precision
     from utils.utils import load_ckpt
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -178,9 +182,12 @@ def main():
     parser.add_argument('--output_path', help='where to write results (default outputs/<bag name>_flow_paths_skip<skip>)', default=None, type=str)
     parser.add_argument('--no_clean', help='keep what is already in the output folder instead of deleting it before the run', action='store_true')
     parser.add_argument('--device', help='inference device', default='cuda', type=str)
+    parser.add_argument('--precision', help="arithmetic mode (utils/precision.py). default: torch's own flags, as before. fp32: full fp32. tf32: TF32 everywhere. fp16: float16 autocast, about twice as fast as fp32 and about 0.01 px from it on average; needs a CUDA device", choices=MODES, default='default', type=str)
     args = parser.parse_args()
     if args.num_images < 2:
         parser.error(f"--num_images must be at least 2, got {args.num_images}")
+    if is_half(args.precision) and not args.device.startswith('cuda'):
+        parser.error('--precision fp16 needs --device cuda')
 
     dataset = OpenRealmBag(args.bag, topic=args.topic, skip=args.skip, stride=args.stride, max_pairs=args.num_images - 1,
                            resolution=args.resolution, undistort=not args.no_undistort)
@@ -191,11 +198,14 @@ def main():
 
     model_args = json_to_args(args.cfg)
     device = torch.device(args.device)
+    set_precision(args.precision)
+    print(f"precision: {args.precision} ({describe_precision()})")
     model = fetch_model(model_args)
     load_ckpt(model, args.ckpt)
     model = model.to(device)
     model.eval()
-    wrapped_model = InferenceWrapper(model, scale=0, train_size=model_args.image_size, pad_to_train_size=False, tiling=False)
+    wrapped_model = InferenceWrapper(model, scale=0, train_size=model_args.image_size, pad_to_train_size=False, tiling=False,
+                                     half=is_half(args.precision))
 
     output_path = args.output_path or osp.join('outputs', osp.basename(osp.normpath(args.bag)) + f'_flow_paths_skip{args.skip}')
     if not args.no_clean:

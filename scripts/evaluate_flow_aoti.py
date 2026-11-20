@@ -6,11 +6,11 @@ Example:
         --package outputs/aoti/fp32_640x480/waft_flow.pt2 \
         --dataset_pt2 outputs/dataset_flow.pt2
 
-The reference is `flow_eager` / `info_eager`: what the eager Python model produced for
+The reference is `flow_eager` / `alpha1_eager` / `log_b0_eager`: what the eager Python model produced for
 the very same input tensors, recorded by scripts/export_dataset.py. So the reported
 numbers are a plain per-pixel difference between two results. For the flow that is the
-endpoint error in pixels -- mean, max and RMSE -- and for the uncertainty head the mean
-and max absolute difference. There is no validity mask to apply: both come from the
+endpoint error in pixels -- mean, max and RMSE -- and for alpha1 and log_b0 together the
+mean and max absolute difference. There is no validity mask to apply: both come from the
 same model on the same inputs, so every pixel is comparable.
 
 Unlike run_flow_aoti.py --compare_eager this needs neither the checkpoint nor the model
@@ -23,6 +23,9 @@ belongs to the process that runs a package, see utils/precision.py. Only under f
 the result a verdict on the build -- there a sound package has a mean endpoint error
 around 1e-5 px, while under tf32 or default the same package is around 1e-2 px from
 eager, with single pixels off by whole pixels (table in aot_compile_flow.py).
+
+fp16 is compiled in: evaluate a package exported under fp16 with --precision fp16
+against a snapshot written under fp16 (around 1e-2 px from that reference).
 """
 
 import argparse
@@ -55,6 +58,7 @@ def main() -> int:
 
     precision = common.apply_precision(args)
     manifest = common.check_manifest(args.package)
+    common.check_precision(manifest, precision)
     common.check_eager_meta(payload, precision)
     common.check_model_matches("the snapshot's eager reference and the package come "
                                "from different models",
@@ -70,11 +74,14 @@ def main() -> int:
         # channels-last strided images; see flow_export_common.FlowExport.
         inputs = (row["image1"].to(args.device).contiguous(),
                   row["image2"].to(args.device).contiguous())
-        reference = (row["flow_eager"].to(args.device), row["info_eager"].to(args.device))
+        if "alpha1_eager" not in row:
+            raise SystemExit(f"{args.dataset_pt2} predates the (flow, alpha1, log_b0) signature; "
+                             f"re-export it with export_dataset.py")
+        reference = tuple(row[key].to(args.device) for key in ("flow_eager", "alpha1_eager", "log_b0_eager"))
         common.check_input_shape(manifest, inputs, name)
 
         with torch.no_grad():
-            prediction = common.as_flow_info(runner(*inputs))
+            prediction = common.as_outputs(runner(*inputs))
         try:
             sums = common.diff_sums(prediction, reference)
         except ValueError as error:

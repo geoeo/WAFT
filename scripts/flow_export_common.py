@@ -48,7 +48,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from config.parser import json_to_args  # noqa: E402
 from dataloader.flow.openrealm import DEFAULT_TOPIC, parse_resolution  # noqa: E402
 from model import fetch_model  # noqa: E402
-from utils.precision import MODES, describe_precision, set_precision  # noqa: E402
+from utils.precision import MODES, describe_precision, is_half, set_precision  # noqa: E402
 
 DEFAULT_CFG = REPO_ROOT / "config" / "a1" / "tar.json"
 DEFAULT_CKPT = REPO_ROOT / "weights" / "tar-c-t.pth"
@@ -74,21 +74,27 @@ def normalize_image(img: torch.Tensor) -> torch.Tensor:
 
 
 class FlowExport(torch.nn.Module):
-    """The deployment signature: two images in positionally, flow and info out.
+    """The deployment signature: two images in positionally, flow and confidence out.
 
     A flat positional tensor signature is what the C++ loader wants, and it keeps the
     exported graph's input spec trivial. Everything non-tensor (the number of refinement
     iterations) is baked in as a constant, and only the last iteration's prediction is
     returned.
 
-        flow, info = model(image1, image2)
+        flow, alpha1, log_b0 = model(image1, image2)
 
-        image1  [B, 3, H, W]   float32, RGB, 0..255 (not normalised), contiguous
-        image2  [B, 3, H, W]   same
-        -> flow [B, 2, H, W]   pixels, (x, y) displacement from image1 to image2
-        -> info [B, 4, H, W]   raw uncertainty head: two mixture logits, then two
-                               log-scales. custom.get_heatmap() turns it into the
-                               uncertainty heatmap.
+        image1  [B, 3, H, W]     float32, RGB, 0..255 (not normalised), contiguous
+        image2  [B, 3, H, W]     same
+        -> flow   [B, 2, H, W]   pixels, (x, y) displacement from image1 to image2
+        -> alpha1 [B, 1, H, W]   softmax(info[:, 0:2])[:, 1]: weight of the tight
+                                 mixture component, whose scale is 1 px
+        -> log_b0 [B, 1, H, W]   clamp(info[:, 2], 0, var_max): log-scale in pixels of
+                                 the wide component
+
+    `info` is the raw uncertainty head. Its softmax and clamp are applied here, as
+    custom.get_heatmap() applies them, so that a consumer cannot leave them out; the
+    heatmap is (1 - alpha1) * log_b0. The fourth channel is dropped: clamped to
+    [var_min, 0] it is always 0 for var_min = 0, which build_model() requires.
 
     "Contiguous" is part of the signature of a compiled package, not a nicety. The
     generated code reads its inputs with the strides of the tracing example and does not
@@ -104,19 +110,31 @@ class FlowExport(torch.nn.Module):
     This is the network alone. The Python pipeline calls it through InferenceWrapper,
     which at scale 0 without tiling adds nothing but `x * w / w` with a Gaussian `w`;
     scripts/aot_compile_flow.py quotes what that costs in agreement.
+
+    With `half` the network runs under float16 autocast (utils/precision.py); inputs
+    and outputs stay float32, and an exported package computes in float16.
     """
 
-    def __init__(self, core: torch.nn.Module, iters: int):
+    def __init__(self, core: torch.nn.Module, iters: int, var_max: float, half: bool = False):
         super().__init__()
         if not hasattr(core, "normalize_image"):
             raise TypeError(f"{type(core).__name__} has no normalize_image to substitute")
         core.normalize_image = normalize_image
         self.core = core
         self.iters = iters
+        self.var_max = float(var_max)
+        self.half = half
 
     def forward(self, image1, image2):
-        out = self.core(image1, image2, iters=self.iters)
-        return out["flow"][-1], out["info"][-1]
+        if self.half:
+            with torch.autocast("cuda", dtype=torch.float16):
+                out = self.core(image1, image2, iters=self.iters)
+        else:  # no autocast region in a float32 graph
+            out = self.core(image1, image2, iters=self.iters)
+        flow, info = out["flow"][-1].float(), out["info"][-1].float()
+        alpha1 = torch.softmax(info[:, 0:2], dim=1)[:, 1:2]
+        log_b0 = torch.clamp(info[:, 2:3], min=0.0, max=self.var_max)
+        return flow, alpha1, log_b0
 
 
 # --------------------------------------------------------------------------- arguments
@@ -169,21 +187,24 @@ def add_pair_args(parser: argparse.ArgumentParser) -> None:
 
 
 def add_precision_arg(parser: argparse.ArgumentParser) -> None:
-    """`--precision fp32|tf32|default`, the arithmetic mode of *this process*.
+    """`--precision fp32|tf32|default|fp16`, the arithmetic mode of *this process*.
 
-    It is not a property of a package: the same package runs under whichever mode the
-    loading process is in (see utils/precision.py). fp32 is the default because it is
-    the mode in which a build can be validated -- there the package agrees with eager to
-    rounding noise, while under the other two the same sound package is ~1e-2 px from
-    eager on average and whole pixels in places. See scripts/aot_compile_flow.py for the
-    measured table.
+    The three float32 modes are not a property of a package: the same package runs
+    under whichever of them the loading process is in (see utils/precision.py). fp32 is
+    the default because it is the mode in which a build can be validated -- there the
+    package agrees with eager to rounding noise, while under the other two the same
+    sound package is ~1e-2 px from eager on average and whole pixels in places. See
+    scripts/aot_compile_flow.py for the measured table.
+
+    fp16 is compiled into a package that is exported under it (check_precision()).
     """
     parser.add_argument("--precision", choices=MODES, default="fp32",
                         help="fp32 (default): full fp32. tf32: allow TF32 everywhere, "
                              "~20%% faster. default: leave torch's flags alone (TF32 "
                              "convolutions, fp32 matmul), which is what evaluate.py "
-                             "runs under. Between modes the flow moves by ~0.01 px on "
-                             "average and by whole pixels in a few spots.")
+                             "runs under. Between these the flow moves by ~0.01 px on "
+                             "average and by whole pixels in a few spots. fp16: float16 "
+                             "autocast, about twice as fast; compiled into the package.")
 
 
 def parse_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
@@ -264,17 +285,26 @@ def build_model(args) -> FlowExport:
             raise SystemExit(f"{message}. They would be exported randomly initialised; "
                              f"pass --allow_missing_keys if that is intended.")
         print(f"  WARNING: {message}")
+    half = is_half(getattr(args, "precision", None))
+    if half and not str(args.device).startswith("cuda"):
+        raise SystemExit("--precision fp16 needs a CUDA device")
     print(f"  {model_args.algorithm} from {_repo_relative(args.cfg)}, weights "
-          f"{_repo_relative(args.ckpt)}, {model_args.iters} refinement iterations")
-    return FlowExport(core, int(model_args.iters)).to(args.device).eval()
+          f"{_repo_relative(args.ckpt)}, {model_args.iters} refinement iterations"
+          + (", float16 autocast" if half else ""))
+    if float(model_args.var_min) != 0.0:
+        raise SystemExit(f"var_min is {model_args.var_min}; the exported outputs assume 0 (see FlowExport)")
+    return FlowExport(core, int(model_args.iters), float(model_args.var_max), half=half).to(args.device).eval()
 
 
-def as_flow_info(result) -> tuple[torch.Tensor, torch.Tensor]:
-    """The (flow, info) pair out of whatever a model, exported module or package returns."""
-    if isinstance(result, torch.Tensor) or len(result) != 2:
-        raise TypeError("expected two outputs (flow, info)")
-    flow, info = result
-    return flow, info
+def as_outputs(result) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """(flow, alpha1, log_b0) out of whatever a model, exported module or package returns."""
+    if not isinstance(result, torch.Tensor) and len(result) == 2:
+        raise SystemExit("two outputs (flow, info): this package or snapshot predates the "
+                         "(flow, alpha1, log_b0) signature; rebuild it")
+    if isinstance(result, torch.Tensor) or len(result) != 3:
+        raise TypeError("expected three outputs (flow, alpha1, log_b0)")
+    flow, alpha1, log_b0 = result
+    return flow, alpha1, log_b0
 
 
 # ------------------------------------------------------------------------------- pairs
@@ -353,15 +383,18 @@ def build_model_and_inputs(args):
 
 
 def diff_sums(result, reference) -> dict[str, float]:
-    """Difference between two (flow, info) results, as running totals.
+    """Difference between two (flow, alpha1, log_b0) results, as running totals; the
+    two confidence outputs are reported together as "info".
 
     The flow difference is measured as endpoint error: the length of the difference of
     the two flow vectors at each pixel, in pixels. Both results come from the same model
     on the same inputs, so there is no validity mask and every pixel counts.
     """
-    flow, info = as_flow_info(result)
-    flow_ref, info_ref = as_flow_info(reference)
-    for name, got, want in (("flow", flow, flow_ref), ("info", info, info_ref)):
+    flow, alpha1, log_b0 = as_outputs(result)
+    flow_ref, alpha1_ref, log_b0_ref = as_outputs(reference)
+    info = torch.cat([alpha1, log_b0], dim=1)
+    info_ref = torch.cat([alpha1_ref, log_b0_ref], dim=1)
+    for name, got, want in (("flow", flow, flow_ref), ("alpha1/log_b0", info, info_ref)):
         if got.shape != want.shape:
             raise ValueError(f"{name} shape {tuple(got.shape)} does not match the "
                              f"reference's {tuple(want.shape)}")
@@ -399,12 +432,27 @@ def format_diff(sums: dict[str, float]) -> str:
     return (
         f"flow EPE mean={sums['epe'] / sums['pixels']:.3e} px "
         f"max={sums['epe_max']:.3e} px rmse={(sums['epe_sq'] / sums['pixels']) ** 0.5:.3e} px | "
-        f"info mean|d|={sums['info'] / sums['info_values']:.3e} max|d|={sums['info_max']:.3e} | "
+        f"alpha1/log_b0 mean|d|={sums['info'] / sums['info_values']:.3e} max|d|={sums['info_max']:.3e} | "
         f"bitexact={bool(sums['bitexact'])}"
     )
 
 
 # ---------------------------------------------------------------------------- manifest
+
+
+def compute_dtype(precision: str | None) -> str:
+    """What a package exported under `precision` computes in (build_info.json)."""
+    return "float16" if is_half(precision) else "float32"
+
+
+def check_precision(manifest: dict, precision: str) -> None:
+    """Report when --precision and the package's compiled-in dtype do not go together:
+    float16 is part of a build, not a run-time switch (utils/precision.py)."""
+    built = manifest.get("compute_dtype", "float32") if manifest else "float32"
+    wanted = compute_dtype(precision)
+    if built != wanted:
+        print(f"  *** MISMATCH: the package computes in {built} (compiled in), but "
+              f"--precision {precision} asks for {wanted}. ***")
 
 
 def manifest_path(package_path: Path) -> Path:
@@ -416,10 +464,11 @@ def write_manifest(build_dir: Path, package_name: str, args, inputs, check: dict
     """Record how a build was compiled, next to the .pt2 package.
 
     None of this can be read back out of the package, and every item decides what a
-    package computes, how fast, or whether it runs at all. The arithmetic mode is
-    deliberately not among them: it belongs to the process that runs the package
-    (utils/precision.py). `check` is the build's own comparison against eager, kept for
-    the record.
+    package computes, how fast, or whether it runs at all. The float32 arithmetic mode
+    is deliberately not among them: it belongs to the process that runs the package
+    (utils/precision.py). `compute_dtype` is: float16 is compiled in when the package
+    was exported under --precision fp16. `check` is the build's own comparison against
+    eager, kept for the record.
     """
     (build_dir / "build_info.json").write_text(json.dumps({
         "package": package_name,
@@ -427,6 +476,8 @@ def write_manifest(build_dir: Path, package_name: str, args, inputs, check: dict
         "device": str(inputs[0].device),
         "input_shape": list(inputs[0].shape),
         "input_layout": INPUT_LAYOUT,
+        "compute_dtype": compute_dtype(getattr(args, "precision", None)),
+        "outputs": ["flow", "alpha1", "log_b0"],
         "layout_optimization": layout_optimization,
         "model": model_info(args),
         "check": check,
@@ -456,7 +507,7 @@ def check_manifest(package_path: Path) -> dict:
     layout = {True: "on", False: "off"}.get(info.get("layout_optimization"), "not recorded")
     print(f"  build_info.json: {model.get('algorithm')} / {model.get('ckpt')}, "
           f"{model.get('iters')} iterations, images {shape[3]}x{shape[2]}, "
-          f"layout optimization {layout}")
+          f"{info.get('compute_dtype', 'float32')}, layout optimization {layout}")
 
     built_torch = info.get("torch")
     if built_torch and built_torch != torch.__version__:
@@ -510,14 +561,14 @@ def check_input_shape(manifest: dict, inputs, name: str) -> None:
 
 
 def export_dataset(args, model: FlowExport, output_path: str | Path, precision: str) -> Path:
-    """Serialize every selected pair's input tensors, and the flow and info the eager
-    Python model produces for them, to a .pt2 snapshot.
+    """Serialize every selected pair's input tensors, and the flow, alpha1 and log_b0 the
+    eager Python model produces for them, to a .pt2 snapshot.
 
     Embedding the tensors makes the snapshot self-contained: nothing is re-read from
     --data_root or a bag afterwards, and a C++ input pipeline can be checked against the
     exact tensors the model was fed.
 
-    `flow_eager` / `info_eager` are the reference a compiled package is scored against:
+    `flow_eager` / `alpha1_eager` / `log_b0_eager` are the reference a compiled package is scored against:
     the eager model's own output, since none of these sequences has flow ground truth.
     They depend on the arithmetic mode the model ran under, so that is recorded
     alongside and checked by check_eager_meta() before any comparison.
@@ -534,13 +585,14 @@ def export_dataset(args, model: FlowExport, output_path: str | Path, precision: 
                              f"earlier pairs are {tuple(shape)}; a snapshot holds one image "
                              f"size (pass --resolution)")
         with torch.no_grad():
-            flow, info = model(image1, image2)
+            flow, alpha1, log_b0 = model(image1, image2)
         pairs.append({
             "name": name,
             "image1": image1.cpu(),
             "image2": image2.cpu(),
             "flow_eager": flow.cpu(),
-            "info_eager": info.cpu(),
+            "alpha1_eager": alpha1.cpu(),
+            "log_b0_eager": log_b0.cpu(),
         })
         magnitude = flow.norm(dim=1)
         print(f"  {name}: embedding eager flow {tuple(flow.shape)} "

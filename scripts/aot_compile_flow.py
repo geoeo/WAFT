@@ -48,8 +48,12 @@ and that is why it defaults to fp32:
     default   291 ms    329 ms   9.7e-03 px mean, 3.2 px max
     tf32      266 ms    295 ms   1.1e-02 px mean, 12 px max
 
-Only the fp32 row is agreement, and it is the only mode in which the comparison says
-anything about the build. The other two are not a broken graph: the model itself is
+--precision fp16 is the exception: the model is exported under float16 autocast, so the
+package computes in float16 whatever the loading process sets. A sound float16 build is
+about 1e-2 px mean from the float16 eager model (limit 3e-2 px).
+
+Among the float32 modes only the fp32 row is agreement, and it is the only one in which
+the comparison says anything about the build. The other two are not a broken graph: the model itself is
 that sensitive to TF32 rounding. The unmodified pipeline, compared with itself, moves
 by 1.0e-02 px mean / 3.0 px max between torch's defaults and fp32, and by 1.1e-02 px /
 5.7 px between tf32 and fp32. The refinement iterations amplify the rounding in a few
@@ -118,6 +122,10 @@ from dataloader.flow.openrealm import clean_output  # noqa: E402
 # model it was compiled from, and TF32 or another model put it at 1e-2 px and beyond
 # (see the table above). The mean, not the max: single pixels reach 1e-2 px even then.
 FP32_EPE_MEAN_LIMIT_PX = 1e-3
+# A float16 package against the float16 eager model: about 1e-2 px mean, because fused
+# and unfused kernels do not round alike in half precision. Another model is further
+# out (3 refinement iterations against 5: 9e-2 px).
+FP16_EPE_MEAN_LIMIT_PX = 3e-2
 
 
 def main() -> int:
@@ -194,7 +202,15 @@ def main() -> int:
         print(f"  package vs eager: {common.format_diff(sums)}")
         check.update(ran=True, epe_mean_px=sums["epe"] / sums["pixels"],
                      epe_max_px=sums["epe_max"])
-        if precision != "fp32":
+        if precision == "fp16":
+            if check["epe_mean_px"] > FP16_EPE_MEAN_LIMIT_PX:
+                print(f"  WARNING: mean endpoint error above {FP16_EPE_MEAN_LIMIT_PX} px "
+                      f"against the float16 eager model -- more than half-precision "
+                      f"rounding, the build is suspect")
+            else:
+                print(f"  (float16 build: within the {FP16_EPE_MEAN_LIMIT_PX} px limit "
+                      f"of half-precision rounding)")
+        elif precision != "fp32":
             print(f"  (under --precision {precision} a sound build is ~1e-2 px mean from "
                   f"eager, pixels in places; check with --precision fp32 to judge the build)")
         elif check["epe_mean_px"] > FP32_EPE_MEAN_LIMIT_PX:

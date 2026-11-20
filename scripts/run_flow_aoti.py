@@ -17,7 +17,8 @@ was not compiled for (--resolution resizes the pairs to the size it wants).
 
 --precision sets the arithmetic mode of this process, which is what the package then
 computes in: the mode is not compiled in (see utils/precision.py). It defaults to fp32,
-the mode in which --compare_eager is a verdict on the build.
+the mode in which --compare_eager is a verdict on the build. fp16 is the exception: it
+is compiled in, so a package exported under fp16 is run with --precision fp16.
 
 One caveat on --compare_eager: importing flow_export_common sets XFORMERS_DISABLED and
 AOTI_SAFE_GRID_SAMPLE, so the eager model built here for comparison is the export-safe
@@ -45,7 +46,7 @@ import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
-from custom import get_heatmap, vis_heatmap  # noqa: E402
+from custom import vis_heatmap  # noqa: E402
 from dataloader.flow.openrealm import clean_output  # noqa: E402
 from utils.flow_viz import flow_to_image  # noqa: E402
 
@@ -95,6 +96,7 @@ def main() -> int:
 
     precision = common.apply_precision(args)
     manifest = common.check_manifest(args.package)
+    common.check_precision(manifest, precision)
     if args.compare_eager:
         common.check_model_matches("the package was built from another model than "
                                    "--cfg/--ckpt/--iters select for the eager comparison",
@@ -115,21 +117,15 @@ def main() -> int:
             clean_output(args.output_dir)
         args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # The heatmap's clamping range belongs to the model the package was built from.
-    heatmap_args = argparse.Namespace(**vars(args.model_args))
-    for key in ("var_min", "var_max"):
-        if key in manifest.get("model", {}):
-            setattr(heatmap_args, key, manifest["model"][key])
-
     total = None
     count = 0
     for name, inputs in common.iter_pairs(args):
         common.check_input_shape(manifest, inputs, name)
         count += 1
         with torch.no_grad():
-            flow, info = common.as_flow_info(runner(*inputs))
+            flow, alpha1, log_b0 = common.as_outputs(runner(*inputs))
         magnitude = flow.norm(dim=1)
-        heatmap = get_heatmap(info, heatmap_args)
+        heatmap = (1 - alpha1) * log_b0  # what custom.get_heatmap computes from the raw head
         print(f"\n[{name}]")
         print(f"  flow {tuple(flow.shape)} on {flow.device} mean={magnitude.mean():.2f} px "
               f"max={magnitude.max():.2f} px, mean uncertainty {heatmap.mean():.3f}")
@@ -137,7 +133,7 @@ def main() -> int:
         if model is not None:
             with torch.no_grad():
                 reference = model(*inputs)
-            sums = common.diff_sums((flow, info), reference)
+            sums = common.diff_sums((flow, alpha1, log_b0), reference)
             total = common.merge_sums(total, sums)
             print(f"  vs eager: {common.format_diff(sums)}")
 
@@ -167,7 +163,11 @@ def main() -> int:
     print(f"\nran {count} pair(s)")
     if total is not None:
         print(f"package vs eager over all pairs: {common.format_diff(total)}")
-        if precision != "fp32":
+        if precision == "fp16":
+            print("NOTE: a float16 package is ~1e-2 px mean from the float16 eager "
+                  "model, pixels in places; above 3e-2 px mean the build is suspect "
+                  "(see aot_compile_flow.py)")
+        elif precision != "fp32":
             print(f"NOTE: under --precision {precision} a sound package is ~1e-2 px mean "
                   f"from eager, pixels in places; run with --precision fp32 to judge "
                   f"the build (see aot_compile_flow.py)")

@@ -1,8 +1,8 @@
-"""Single definition of the float32 arithmetic mode used by the export scripts.
+"""Single definition of the arithmetic mode used by the scripts of this repository.
 
-On an Ampere-or-newer GPU there are three modes, and they give measurably different
-flow -- about 0.01 px on average and whole pixels in a few spots, because the refinement
-iterations amplify the rounding:
+On an Ampere-or-newer GPU there are three float32 modes, and they give measurably
+different flow -- about 0.01 px on average and whole pixels in a few spots, because the
+refinement iterations amplify the rounding:
 
   * "fp32":    full fp32 everywhere.
   * "tf32":    TF32 in cuDNN convolutions and in cuBLAS matmul. Fastest.
@@ -26,11 +26,17 @@ mode itself:
 `set_float32_matmul_precision` alone does not cover cuDNN, whose `allow_tf32` defaults
 to True, so every flag is set explicitly here and neither explicit mode depends on a
 torch default. scripts/aot_compile_flow.py carries the measured differences.
+
+A fourth mode, "fp16", runs the network under `torch.autocast(dtype=float16)` with TF32
+allowed for what autocast keeps in float32; inputs and outputs stay float32. For an
+eager model the call has to be wrapped in autocast(mode). For a compiled package it is
+part of the build: a package exported under fp16 computes in float16 whatever the
+loading process sets, and only the TF32 flags still apply at run time.
 """
 
 import torch
 
-MODES = ("fp32", "tf32", "default")
+MODES = ("fp32", "tf32", "default", "fp16")
 
 
 def set_precision(mode: str) -> None:
@@ -39,12 +45,25 @@ def set_precision(mode: str) -> None:
         torch.set_float32_matmul_precision("highest")
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-    elif mode == "tf32":
+    elif mode in ("tf32", "fp16"):
         torch.set_float32_matmul_precision("high")
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
     elif mode != "default":
         raise ValueError(f"unknown precision mode {mode!r}, expected one of {MODES}")
+
+
+def is_half(mode: str | None) -> bool:
+    """Whether `mode` computes the network in float16."""
+    return mode == "fp16"
+
+
+def autocast(mode: str | None, device_type: str = "cuda"):
+    """Context manager for one eager model call under `mode`: float16 autocast for
+    "fp16", nothing otherwise. The caller casts the outputs back with `.float()`."""
+    if is_half(mode) and device_type != "cuda":
+        raise ValueError("fp16 needs a CUDA device")
+    return torch.autocast(device_type, dtype=torch.float16, enabled=is_half(mode))
 
 
 def describe_precision() -> str:

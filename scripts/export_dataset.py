@@ -12,7 +12,7 @@ The resulting .pt2 is self-contained -- load it with
 flow_export_common.load_snapshot(), and pass it to aot_compile_flow.py,
 run_flow_aoti.py and evaluate_flow_aoti.py via --dataset_pt2.
 
-Each pair also carries `flow_eager` and `info_eager`: what the eager Python model
+Each pair also carries `flow_eager`, `alpha1_eager` and `log_b0_eager`: what the eager Python model
 produces for that pair. That is the reference evaluate_flow_aoti.py scores a compiled
 package against; these sequences have no flow ground truth, and ground truth would
 measure the model rather than the compile anyway.

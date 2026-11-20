@@ -57,4 +57,11 @@ def grid_sample(img: torch.Tensor, grid: torch.Tensor) -> torch.Tensor:
     """
     if not SAFE_GRID_SAMPLE:
         return F.grid_sample(img, grid, align_corners=True)
+    if img.dtype != grid.dtype:
+        # Under float16 autocast the feature map is float16 and the sampling grid
+        # float32. F.grid_sample is on autocast's float32 list and casts both; a direct
+        # aten.grid_sampler_2d call is not and raises "expected scalar type Half but
+        # found Float". Do here what autocast does. With equal dtypes, i.e. in every
+        # float32 mode, nothing is added to the graph.
+        img, grid = img.float(), grid.float()
     return torch.ops.aten.grid_sampler_2d(img, grid, _BILINEAR, _ZEROS, True)

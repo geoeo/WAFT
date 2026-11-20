@@ -15,6 +15,7 @@ from model import fetch_model
 from inference_tools import InferenceWrapper
 from utils.flow_viz import flow_to_image
 from utils.utils import load_ckpt
+from utils.precision import MODES, describe_precision, is_half, set_precision
 
 def create_color_bar(height, width, color_map):
     """
@@ -120,7 +121,12 @@ def main():
     parser.add_argument('--cfg', help='experiment configure file name', required=True, type=str)
     parser.add_argument('--ckpt', help='checkpoint path', required=True, type=str)
     parser.add_argument('--device', help='inference device', type=str, default='cpu')
+    parser.add_argument('--precision', help="arithmetic mode (utils/precision.py). default: torch's own flags, as before. fp32: full fp32. tf32: TF32 everywhere. fp16: float16 autocast, about twice as fast as fp32 and about 0.01 px from it on average; needs a CUDA device", choices=MODES, default='default', type=str)
     args = parse_args(parser)
+    if is_half(args.precision) and args.device != 'cuda':
+        parser.error('--precision fp16 needs --device cuda')
+    set_precision(args.precision)
+    print(f"precision: {args.precision} ({describe_precision()})")
     model = fetch_model(args)
     load_ckpt(model, args.ckpt)
         
@@ -130,7 +136,8 @@ def main():
         device = torch.device('cpu')
     model = model.to(device)
     model.eval()
-    wrapped_model = InferenceWrapper(model, scale=0, train_size=args.image_size, pad_to_train_size=False, tiling=False)
+    wrapped_model = InferenceWrapper(model, scale=0, train_size=args.image_size, pad_to_train_size=False, tiling=False,
+                                     half=is_half(args.precision))
     demo_custom(wrapped_model, args, device=device)
 
 if __name__ == '__main__':

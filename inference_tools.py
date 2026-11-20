@@ -50,8 +50,11 @@ class AverageMeter(object):
         self.avg = self.val / self.count
 
 class InferenceWrapper(object):
-    def __init__(self, model, scale=0, train_size=None, pad_to_train_size=False, tiling=False):
+    def __init__(self, model, scale=0, train_size=None, pad_to_train_size=False, tiling=False, half=False):
+        # half: run the network under float16 autocast (the "fp16" mode of
+        # utils/precision.py). Inputs and the returned tensors stay float32.
         self.model = model
+        self.half = half
         self.train_size = train_size
         self.scale = scale
         self.pad_to_train_size = pad_to_train_size
@@ -75,7 +78,10 @@ class InferenceWrapper(object):
             weight = generate_gaussian((hr - hl, wr - wl), 1).to(image1.device).unsqueeze(0)
             image1_ij = image1[:, :, hl: hr, wl: wr]
             image2_ij = image2[:, :, hl: hr, wl: wr]
-            output_ij = self.model(image1_ij, image2_ij)
+            with torch.autocast(image1.device.type, dtype=torch.float16, enabled=self.half):
+                output_ij = self.model(image1_ij, image2_ij)
+            if self.half:
+                output_ij = {key: [value.float() for value in values] for key, values in output_ij.items()}
             valid[:, hl: hr, wl: wr] += weight
             if output is None:
                 output = {}

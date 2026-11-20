@@ -2,7 +2,7 @@
 # Run the dataset export, AOT compile, package inference and package evaluation in
 # sequence.
 #
-#   bash scripts/run_aot_export_chain.sh [--precision fp32|tf32|default]
+#   bash scripts/run_aot_export_chain.sh [--precision fp32|tf32|default|fp16]
 #
 # Meant to run inside the devcontainer. From the host:
 #   devcontainer exec --workspace-folder . bash scripts/run_aot_export_chain.sh
@@ -17,13 +17,17 @@
 # The image size the package is built for defaults to 640x480; set RESOLUTION
 # (WIDTHxHEIGHT) for another one. The pairs are resized to it, and the build goes to
 # outputs/aoti/<precision>_<RESOLUTION>/, by default outputs/aoti/fp32_640x480/.
+#
+# fp16 is the one mode that is compiled into the package (see utils/precision.py).
+# ITERS sets the number of refinement iterations (default: the cfg's); the snapshot
+# and the build directory then end in _t<ITERS>.
 set -euo pipefail
 
 precision="fp32"
 while [ $# -gt 0 ]; do
     case "$1" in
         --precision)
-            [ $# -ge 2 ] || { echo "--precision needs a value: fp32, tf32 or default" >&2; exit 2; }
+            [ $# -ge 2 ] || { echo "--precision needs a value: fp32, tf32, default or fp16" >&2; exit 2; }
             precision="$2"
             shift 2
             ;;
@@ -36,14 +40,14 @@ while [ $# -gt 0 ]; do
             exit 0
             ;;
         *)
-            echo "unknown argument: $1 (usage: $0 [--precision fp32|tf32|default])" >&2
+            echo "unknown argument: $1 (usage: $0 [--precision fp32|tf32|default|fp16])" >&2
             exit 2
             ;;
     esac
 done
 case "$precision" in
-    fp32|tf32|default) ;;
-    *) echo "--precision must be fp32, tf32 or default, got '$precision'" >&2; exit 2 ;;
+    fp32|tf32|default|fp16) ;;
+    *) echo "--precision must be fp32, tf32, default or fp16, got '$precision'" >&2; exit 2 ;;
 esac
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,9 +56,12 @@ cd "$repo_root"
 python="${PYTHON:-/opt/conda/envs/waft/bin/python}"
 # The snapshot holds the eager model's flow, which depends on the precision, so each
 # mode gets its own file and the modes do not overwrite each other's reference.
-dataset_pt2="$repo_root/outputs/dataset_flow_realm_1_100m_${precision}.pt2"
+iters_args=()
+[ -n "${ITERS:-}" ] && iters_args=(--iters "$ITERS")
+tag="${ITERS:+_t$ITERS}"
+dataset_pt2="$repo_root/outputs/dataset_flow_realm_1_100m_${precision}${tag}.pt2"
 resolution="${RESOLUTION:-640x480}"
-build_dir="$repo_root/outputs/aoti/${precision}_$resolution"
+build_dir="$repo_root/outputs/aoti/${precision}_${resolution}${tag}"
 export CUDA_VISIBLE_DEVICES=0
 
 echo "[1/4] Export Dataset (.pt2) at $resolution, precision $precision"
@@ -62,6 +69,7 @@ echo "[1/4] Export Dataset (.pt2) at $resolution, precision $precision"
     --data_root "$repo_root/custom/realm_1_100m_w_tandem" \
     --resolution "$resolution" \
     --precision "$precision" \
+    "${iters_args[@]}" \
     --offset 0 \
     --count 3 \
     --output "$dataset_pt2"
@@ -71,6 +79,7 @@ echo "[2/4] AOT Compile Flow"
     --dataset_pt2 "$dataset_pt2" \
     --output_dir "$build_dir" \
     --precision "$precision" \
+    "${iters_args[@]}" \
     --clean
 
 echo "[3/4] Run Flow Package"
@@ -78,6 +87,7 @@ echo "[3/4] Run Flow Package"
     --package "$build_dir/waft_flow.pt2" \
     --dataset_pt2 "$dataset_pt2" \
     --precision "$precision" \
+    "${iters_args[@]}" \
     --benchmark --bench_iters 8 \
     --compare_eager \
     --output_dir "$repo_root/outputs/aoti_flow" \
