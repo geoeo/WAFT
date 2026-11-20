@@ -92,7 +92,7 @@ The flow network can be compiled ahead of time with `torch.export` + AOTInductor
 devcontainer exec --workspace-folder . bash scripts/run_aot_export_chain.sh
 ```
 
-(inside the container: `bash scripts/run_aot_export_chain.sh`). The [script](scripts/run_aot_export_chain.sh) uses GPU 0 and `/opt/conda/envs/waft/bin/python`; set `PYTHON` to use another interpreter. It builds for 640x480 images; set `RESOLUTION` (e.g. `RESOLUTION=1024x768`) for another size, which resizes the pairs and moves the build to `outputs/aoti/<RESOLUTION>/`. It works from any working directory, stops if a step fails, and replaces what earlier runs left at its output locations. Its four steps are also available as VS Code launch configurations:
+(inside the container: `bash scripts/run_aot_export_chain.sh`). The [script](scripts/run_aot_export_chain.sh) uses GPU 0 and `/opt/conda/envs/waft/bin/python`; set `PYTHON` to use another interpreter. It builds for 640x480 images; set `RESOLUTION` (e.g. `RESOLUTION=1024x768`) for another size, which resizes the pairs and moves the build to `outputs/aoti/<RESOLUTION>/`. All four steps run under `--precision fp32`; pass `--precision tf32` or `--precision default` to the script to run them under another float32 mode (the package itself does not depend on it, see below). It works from any working directory, stops if a step fails, and replaces what earlier runs left at its output locations. Its four steps are also available as VS Code launch configurations:
 
 | Step | Script | Writes |
 |---|---|---|
