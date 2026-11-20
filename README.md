@@ -84,6 +84,12 @@ To run WAFT offline over the camera images of an OpenREALM rosbag2 recording (re
 python dataloader/flow/openrealm.py --cfg config/a1/tar.json --ckpt weights/tar-c-t.pth --resolution 640x480 --bag /bags/2025_10_15-Guenselsdorf-rec/seq0/bags/all/rosbag2_2025_10_15-09_49_48_eight
 ```
 
+To follow a grid of pixels through several consecutive images of such a recording and draw the path each one takes (N images, default 5, give N - 1 flows; one image per flow is written to `outputs/<bag name>_flow_paths_skip<skip>`, the image of flow k showing every pixel's path from image 0 as a chain of k + 1 arrows, one colour per step; the followed pixels are the grid the arrow image above uses, `--arrow_step`; images are resized to 640x480 unless `--resolution` says otherwise):
+
+```Shell
+python scripts/flow_paths.py --skip 3000 --num_images 5
+```
+
 ## AOT export
 
 The flow network can be compiled ahead of time with `torch.export` + AOTInductor into a single self-contained `.pt2` package that runs without the Python model code, from Python (`torch._inductor.aoti_load_package`) or C++ (`torch::inductor::AOTIModelPackageLoader`). The scripts live in [scripts/](scripts) and run inside the devcontainer; from the host, the whole chain is

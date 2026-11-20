@@ -168,6 +168,15 @@ def clean_output(output_path):
     print(f"Cleaned {output_path}: deleted {len(entries)} files/folders from earlier runs")
 
 
+def arrow_grid(height, width, step):
+    """The pixels whose flow is drawn as arrows: a regular grid of (x, y), row by row. `step`
+    is the grid spacing: a fraction of the image width if below 1, otherwise pixels. Also
+    returns the line thickness that goes with an image of this width."""
+    step = max(int(step * width if step < 1 else step), 1)
+    points = [(x, y) for y in range(step // 2, height, step) for x in range(step // 2, width, step)]
+    return points, max(round(width / 640), 1)
+
+
 def vis_arrows(name, image, flow, step):
     """Draw the flow of a regular grid of pixels as arrows on top of `image` (RGB, the first
     image of the pair). Each arrow starts at a pixel of the first image and ends where that
@@ -175,11 +184,9 @@ def vis_arrows(name, image, flow, step):
     of the image content; the camera moves the opposite way over a static scene. `step` is the
     grid spacing: a fraction of the image width if below 1, otherwise pixels."""
     canvas = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2BGR)
-    height, width = flow.shape[:2]
-    step = max(int(step * width if step < 1 else step), 1)
-    thickness = max(round(width / 640), 1)
+    points, thickness = arrow_grid(*flow.shape[:2], step)
     arrows = [((x, y), (round(x + float(flow[y, x, 0])), round(y + float(flow[y, x, 1]))))
-              for y in range(step // 2, height, step) for x in range(step // 2, width, step)]
+              for x, y in points]
     # dark outline first, then the bright arrow, so it stays visible on any background
     for color, extra in (((0, 0, 0), 2 * thickness), ((0, 255, 255), 0)):
         for start, end in arrows:
