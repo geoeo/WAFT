@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
 from typing import Callable, Optional
 
 from torch import Tensor, nn
@@ -33,10 +34,14 @@ class SwiGLUFFN(nn.Module):
         return self.w3(hidden)
 
 
+XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None  # see attention.py
 try:
-    from xformers.ops import SwiGLU
+    if XFORMERS_ENABLED:
+        from xformers.ops import SwiGLU
 
-    XFORMERS_AVAILABLE = True
+        XFORMERS_AVAILABLE = True
+    else:
+        raise ImportError
 except ImportError:
     SwiGLU = SwiGLUFFN
     XFORMERS_AVAILABLE = False

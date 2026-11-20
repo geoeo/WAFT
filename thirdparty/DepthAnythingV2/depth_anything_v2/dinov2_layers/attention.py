@@ -9,6 +9,7 @@
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 
 import logging
+import os
 
 from torch import Tensor
 from torch import nn
@@ -17,12 +18,20 @@ from torch import nn
 logger = logging.getLogger("dinov2")
 
 
+# Same switch as upstream DINOv2: setting XFORMERS_DISABLED (to anything) before this
+# module is imported selects the plain-PyTorch attention below. The export scripts need
+# that, because xformers' memory_efficient_attention is an opaque custom op that
+# torch.export cannot lower (see scripts/flow_export_common.py).
+XFORMERS_ENABLED = os.environ.get("XFORMERS_DISABLED") is None
 try:
-    from xformers.ops import memory_efficient_attention, unbind, fmha
+    if XFORMERS_ENABLED:
+        from xformers.ops import memory_efficient_attention, unbind, fmha
 
-    XFORMERS_AVAILABLE = True
+        XFORMERS_AVAILABLE = True
+    else:
+        raise ImportError
 except ImportError:
-    logger.warning("xFormers not available")
+    logger.warning("xFormers not available" if XFORMERS_ENABLED else "xFormers disabled")
     XFORMERS_AVAILABLE = False
 
 

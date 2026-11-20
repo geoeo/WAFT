@@ -84,6 +84,35 @@ To run WAFT offline over the camera images of an OpenREALM rosbag2 recording (re
 python dataloader/flow/openrealm.py --cfg config/a1/tar.json --ckpt weights/tar-c-t.pth --resolution 640x480 --bag /bags/2025_10_15-Guenselsdorf-rec/seq0/bags/all/rosbag2_2025_10_15-09_49_48_eight
 ```
 
+## AOT export
+
+The flow network can be compiled ahead of time with `torch.export` + AOTInductor into a single self-contained `.pt2` package that runs without the Python model code, from Python (`torch._inductor.aoti_load_package`) or C++ (`torch::inductor::AOTIModelPackageLoader`). The scripts live in [scripts/](scripts) and run inside the devcontainer; from the host, the whole chain is
+
+```Shell
+devcontainer exec --workspace-folder . bash scripts/run_aot_export_chain.sh
+```
+
+(inside the container: `bash scripts/run_aot_export_chain.sh`). The [script](scripts/run_aot_export_chain.sh) uses GPU 0 and `/opt/conda/envs/waft/bin/python`; set `PYTHON` to use another interpreter. It builds for 640x480 images; set `RESOLUTION` (e.g. `RESOLUTION=1024x768`) for another size, which resizes the pairs and moves the build to `outputs/aoti/<RESOLUTION>/`. It works from any working directory, stops if a step fails, and replaces what earlier runs left at its output locations. Its four steps are also available as VS Code launch configurations:
+
+| Step | Script | Writes |
+|---|---|---|
+| Export Dataset (.pt2) | `scripts/export_dataset.py` | `outputs/dataset_flow_realm_1_100m.pt2`: the first 3 keyframe pairs of `custom/realm_1_100m_w_tandem`, resized to 640x480, as input tensors, plus the eager model's flow for them |
+| AOT Compile Flow | `scripts/aot_compile_flow.py` | `outputs/aoti/640x480/waft_flow.pt2` and a `build_info.json` beside it (image size, model, torch version) |
+| Run Flow Package | `scripts/run_flow_aoti.py` | `outputs/aoti_flow/`: raw flow, flow visualisation and uncertainty heatmap per pair; prints timing and the difference to the eager model |
+| Evaluate Flow Package | `scripts/evaluate_flow_aoti.py` | prints the package's difference to the eager flow stored in the snapshot |
+
+`scripts/export_flow_model.py` additionally saves the intermediate `torch.export` graph for inspection; nothing consumes it.
+
+The package signature is `flow, info = model(image1, image2)`: two `[1, 3, H, W]` float32 RGB images in 0..255, giving the flow `[1, 2, H, W]` in pixels and the raw uncertainty head `[1, 4, H, W]` (`custom.get_heatmap` turns it into the heatmap). Things to know:
+
+- **One package per image size.** H, W, the batch size of 1 and the number of refinement iterations are baked in. Compile for another size with `--resolution WIDTHxHEIGHT`; pairs can come from a keyframe sequence (`--data_root`) or a rosbag (`--bag`), as for the scripts above. Feeding a package another size is not a clean error, it fails inside cuDNN, so `run_flow_aoti.py` checks the size against `build_info.json` first.
+- **One package per torch version.** A package is locked to the torch that compiled it; recompile after an upgrade.
+- **Precision is chosen at run time, not at compile time.** The same package computes in whichever float32 mode the loading process is in: `--precision fp32` (default of these scripts), `tf32`, or `default` (torch's own defaults: TF32 convolutions, fp32 matmul, which is what `evaluate.py` runs under). Between modes the flow moves by about 0.01 px on average and by whole pixels in a few spots of large-motion pairs (this is the model's own sensitivity to TF32 rounding and applies to the eager pipeline just the same), so compare like with like; a C++ consumer sets the mode through `at::globalContext()`, see [utils/precision.py](utils/precision.py).
+- **Accuracy.** Under fp32 the package reproduces the eager model it was compiled from to 2.4e-05 px mean / 1.5e-02 px max endpoint error (twelve 640x480 pairs, RTX 3060, torch 2.15.0), at 348 ms per pair against 340 ms eager; with TF32 allowed it is about 9% faster than eager. The full table, including the distance to what `evaluate.py` produces, is in the docstring of [scripts/aot_compile_flow.py](scripts/aot_compile_flow.py).
+- **Export-safe substitutions.** While exporting, xformers attention is replaced by plain attention and the cuDNN grid sampler by `aten.grid_sampler_2d` (see [scripts/flow_export_common.py](scripts/flow_export_common.py) and [utils/export_compat.py](utils/export_compat.py)). Both are switched on by environment variables that only the export scripts set; the normal pipeline is unchanged.
+
+Only the a1 model (`config/a1/tar.json` with `weights/tar-c-t.pth`) has been compiled and checked. The a2 models with the DAv2 and Twins backbones get through `torch.export` with untrained weights, but have not been compiled or compared against a checkpoint; the DINOv3 backbone has not been tried.
+
 ## Acknowledgements
 
 This project relies on code from existing repositories: [RAFT](https://github.com/princeton-vl/RAFT), [DPT](https://github.com/isl-org/DPT), [Flowformer](https://github.com/drinkingcoder/FlowFormer-Official), [ptlflow](https://github.com/hmorimitsu/ptlflow), [DepthAnythingV2](https://github.com/DepthAnything/Depth-Anything-V2), and [DINOv3](https://ai.meta.com/dinov3/). We thank the original authors for their excellent work.

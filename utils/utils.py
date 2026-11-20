@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import numpy as np
 from scipy import interpolate
 
+from utils import export_compat
+
 def load_ckpt(model, path):
     """ Load checkpoint """
     state_dict = torch.load(path, map_location=torch.device('cpu'))
@@ -76,7 +78,7 @@ def bilinear_sampler(img, coords, mode='bilinear', mask=False):
     ygrid = 2*ygrid/(H-1) - 1
 
     grid = torch.cat([xgrid, ygrid], dim=-1)
-    img = F.grid_sample(img, grid, align_corners=True)
+    img = export_compat.grid_sample(img, grid)
 
     if mask:
         mask = (xgrid > -1) & (ygrid > -1) & (xgrid < 1) & (ygrid < 1)
