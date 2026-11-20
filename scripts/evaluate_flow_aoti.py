@@ -66,7 +66,10 @@ def main() -> int:
     evaluated = 0
     for row in payload["pairs"]:
         name = row["name"]
-        inputs = (row["image1"].to(args.device), row["image2"].to(args.device))
+        # contiguous(): snapshots written before the input layout was pinned down hold
+        # channels-last strided images; see flow_export_common.FlowExport.
+        inputs = (row["image1"].to(args.device).contiguous(),
+                  row["image2"].to(args.device).contiguous())
         reference = (row["flow_eager"].to(args.device), row["info_eager"].to(args.device))
         common.check_input_shape(manifest, inputs, name)
 

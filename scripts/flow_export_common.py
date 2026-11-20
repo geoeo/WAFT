@@ -54,6 +54,10 @@ DEFAULT_CFG = REPO_ROOT / "config" / "a1" / "tar.json"
 DEFAULT_CKPT = REPO_ROOT / "weights" / "tar-c-t.pth"
 DEFAULT_DATA_ROOT = REPO_ROOT / "custom" / "realm_1_100m_w_tandem"
 
+# Recorded in build_info.json; see FlowExport. Packages built before this was pinned
+# down expect the loaders' channels-last strides instead and carry no such record.
+INPUT_LAYOUT = "contiguous NCHW"
+
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
@@ -79,12 +83,23 @@ class FlowExport(torch.nn.Module):
 
         flow, info = model(image1, image2)
 
-        image1  [B, 3, H, W]   float32, RGB, 0..255 (not normalised)
+        image1  [B, 3, H, W]   float32, RGB, 0..255 (not normalised), contiguous
         image2  [B, 3, H, W]   same
         -> flow [B, 2, H, W]   pixels, (x, y) displacement from image1 to image2
         -> info [B, 4, H, W]   raw uncertainty head: two mixture logits, then two
                                log-scales. custom.get_heatmap() turns it into the
                                uncertainty heatmap.
+
+    "Contiguous" is part of the signature of a compiled package, not a nicety. The
+    generated code reads its inputs with the strides of the tracing example and does not
+    check them, so a tensor of the right shape in another memory layout is silently read
+    as a scrambled image. That is easy to hit: the loaders of this repository build
+    their images as `torch.from_numpy(hwc).permute(2, 0, 1).float()`, which has the
+    shape [3, H, W] but channels-last strides. A package traced from such a tensor
+    computes flow that is ~11 px off (on 13 px of motion) when it is then given an
+    ordinary [1, 3, H, W] tensor, as a C++ caller would build one. iter_pairs() therefore
+    hands out plain contiguous NCHW tensors, for tracing and for running alike, and
+    build_info.json records it (INPUT_LAYOUT).
 
     This is the network alone. The Python pipeline calls it through InferenceWrapper,
     which at scale 0 without tiling adds nothing but `x * w / w` with a Gaussian `w`;
@@ -277,10 +292,16 @@ def _resize(image: torch.Tensor, resolution) -> torch.Tensor:
 def iter_pairs(args, device=None):
     """Yield (name, (image1, image2)) for every selected pair, lazily.
 
-    The images are [1, 3, H, W] float32 RGB in 0..255 on `device` -- exactly the tensors
-    the model is called with. `name` is "<timestamp1>_<timestamp2>".
+    The images are [1, 3, H, W] float32 RGB in 0..255 on `device`, contiguous -- exactly
+    the tensors the model is called with. `name` is "<timestamp1>_<timestamp2>".
     """
-    device = device or args.device
+    for name, (image1, image2) in _iter_pairs_as_loaded(args, device or args.device):
+        # The loaders return permuted HWC arrays, i.e. channels-last strides, and older
+        # snapshots stored them that way. See FlowExport for why this must not leak.
+        yield name, (image1.contiguous(), image2.contiguous())
+
+
+def _iter_pairs_as_loaded(args, device):
     if args.dataset_pt2 is not None:
         print(f"  using dataset snapshot {args.dataset_pt2}; ignoring the other pair options")
         for row in load_snapshot(args.dataset_pt2)["pairs"]:
@@ -390,19 +411,23 @@ def manifest_path(package_path: Path) -> Path:
     return Path(package_path).parent / "build_info.json"
 
 
-def write_manifest(build_dir: Path, package_name: str, args, inputs, check: dict) -> None:
+def write_manifest(build_dir: Path, package_name: str, args, inputs, check: dict,
+                   layout_optimization: bool) -> None:
     """Record how a build was compiled, next to the .pt2 package.
 
     None of this can be read back out of the package, and every item decides what a
-    package computes or whether it runs at all. The arithmetic mode is deliberately not
-    among them: it belongs to the process that runs the package (utils/precision.py).
-    `check` is the build's own comparison against eager, kept for the record.
+    package computes, how fast, or whether it runs at all. The arithmetic mode is
+    deliberately not among them: it belongs to the process that runs the package
+    (utils/precision.py). `check` is the build's own comparison against eager, kept for
+    the record.
     """
     (build_dir / "build_info.json").write_text(json.dumps({
         "package": package_name,
         "torch": torch.__version__,
         "device": str(inputs[0].device),
         "input_shape": list(inputs[0].shape),
+        "input_layout": INPUT_LAYOUT,
+        "layout_optimization": layout_optimization,
         "model": model_info(args),
         "check": check,
         "created": datetime.now().isoformat(timespec="seconds"),
@@ -428,8 +453,10 @@ def check_manifest(package_path: Path) -> dict:
               f"{Path(package_path).name}; its contents may not apply")
     model = info.get("model", {})
     shape = info.get("input_shape") or [None] * 4
+    layout = {True: "on", False: "off"}.get(info.get("layout_optimization"), "not recorded")
     print(f"  build_info.json: {model.get('algorithm')} / {model.get('ckpt')}, "
-          f"{model.get('iters')} iterations, images {shape[3]}x{shape[2]}")
+          f"{model.get('iters')} iterations, images {shape[3]}x{shape[2]}, "
+          f"layout optimization {layout}")
 
     built_torch = info.get("torch")
     if built_torch and built_torch != torch.__version__:
@@ -457,8 +484,19 @@ def check_model_matches(what: str, theirs: dict | None, ours: dict | None) -> No
 
 
 def check_input_shape(manifest: dict, inputs, name: str) -> None:
-    """Stop on an image size the package was not compiled for. H and W are static in the
-    graph, and the runtime's own complaint about it is not readable."""
+    """Stop on an image size or memory layout the package was not compiled for. H and W
+    are static in the graph and the runtime's own complaint about them is not readable;
+    a wrong layout draws no complaint at all, only wrong flow (see FlowExport)."""
+    if manifest and manifest.get("input_layout") != INPUT_LAYOUT:
+        raise SystemExit(
+            f"the package's build_info.json does not say input_layout={INPUT_LAYOUT!r}: "
+            f"it was built before the input layout was pinned down and expects "
+            f"channels-last strides, so it would silently compute wrong flow from the "
+            f"contiguous tensors these scripts now pass. Recompile it with "
+            f"aot_compile_flow.py."
+        )
+    if not all(t.is_contiguous() for t in inputs):
+        raise SystemExit(f"pair {name} is not contiguous; the package would misread it")
     built = manifest.get("input_shape")
     if built and list(inputs[0].shape) != list(built):
         raise SystemExit(

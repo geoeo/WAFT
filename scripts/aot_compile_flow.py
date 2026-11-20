@@ -10,6 +10,11 @@ together with the batch size of 1 and the number of refinement iterations, so a 
 accepts exactly one image size: compile one per resolution, with --resolution. The
 default build directory is named after it, outputs/aoti/<width>x<height>/.
 
+The example's memory layout is baked in as well, and unlike the size it is not checked
+at run time: the package must be given contiguous [1, 3, H, W] tensors, which is what
+these scripts trace with and pass. Any other layout yields wrong flow without an error;
+see flow_export_common.FlowExport.
+
 This uses the two-step export workflow:
 
     ep      = torch.export.export(model, inputs)
@@ -36,9 +41,9 @@ byte-identical .so and kernels and return bit-identical flow in either runtime m
 and that is why it defaults to fp32:
 
     mode      package   eager    package vs eager, same mode (endpoint error)
-    fp32      348 ms    340 ms   2.4e-05 px mean, 1.5e-02 px max
-    default   296 ms    325 ms   1.1e-02 px mean, 3.3 px max
-    tf32      269 ms    293 ms   1.6e-02 px mean, 10 px max
+    fp32      298 ms    336 ms   2.5e-05 px mean, 1.4e-02 px max
+    default   291 ms    329 ms   9.7e-03 px mean, 3.2 px max
+    tf32      266 ms    295 ms   1.1e-02 px mean, 12 px max
 
 Only the fp32 row is agreement, and it is the only mode in which the comparison says
 anything about the build. The other two are not a broken graph: the model itself is
@@ -58,16 +63,37 @@ That is the mode sensitivity just described and nothing else: with both sides in
 the two substitutions (xformers attention, cuDNN grid sampler) cost 2.6e-05 px mean /
 4.4e-02 px max, and InferenceWrapper's `x * w / w` another 7.6e-06 px max (one pair).
 
-So the package is not faster than eager under fp32 on this GPU -- the time goes into
-cuDNN convolutions either way -- and about 9% faster where TF32 is allowed. What it
-buys is deployment without the Python model code.
+So the package is 10 to 12% faster than eager in every mode, on top of deploying
+without the Python model code. Most of the GPU time is attention and linear-layer
+library kernels that a compiler cannot touch; the gain is the fusion of the small
+elementwise operations around them.
+
+That holds for the default, --layout_optimization off. Inductor's own default is to
+rewrite convolutions to channels-last (NHWC), on the assumption that cuDNN is fastest
+there. For this model it is not:
+
+    mode      layout optimization off   on
+    fp32      298 ms                    345 ms
+    default   291 ms                    299 ms
+    tf32      262-269 ms                271 ms
+
+Under fp32 cuDNN runs part of the NHWC convolutions with slower algorithms and adds
+several hundred layout-conversion kernels per call, 47 ms in all, which more than eats
+the fusion gain and leaves the package slower than eager. With TF32 allowed the loss is
+small but it is still not a gain, so the rewrite is off unless asked for with
+--layout_optimization on. The flow is the same either way (fp32, against eager:
+2.4e-05 px mean with it on). build_info.json records the setting. Worth re-measuring
+after a torch or cuDNN upgrade, on another GPU, or at a very different resolution;
+.agents/aot-vs-python-performance.md has the kernel-level breakdown.
 
 Measured 2026-11-20 on torch 2.15.0+cu134 / RTX 3060, over the twelve 640x480 keyframe
 pairs of custom/realm_1_100m_w_tandem (52 to 91 px of mean flow), a1 model with
-weights/tar-c-t.pth, 5 iterations. At 1024x768 (two rosbag pairs) the fp32 package is at
-9.1e-06 px mean / 1.5e-04 px max from eager, 1150 ms against 1130 ms.
+weights/tar-c-t.pth, 5 iterations; timings are the mean of two passes. The comparison
+with evaluate.py above was taken with a layout-optimised build; it is governed by the
+mode sensitivity, not by the build. At 1024x768 (two rosbag pairs, layout-optimised
+build) the fp32 package is at 9.1e-06 px mean / 1.5e-04 px max from eager.
 
-Step 1 of 2. Takes a couple of minutes.
+Step 1 of 2. Takes a minute or two.
 """
 
 import argparse
@@ -102,6 +128,12 @@ def main() -> int:
                              "outputs/aoti/<width>x<height>/). Holds the waft_flow.pt2 "
                              "package and its build_info.json; the package alone is "
                              "enough to run inference and can be copied anywhere.")
+    parser.add_argument("--layout_optimization", choices=["on", "off"], default="off",
+                        help="off (default): keep the convolutions in NCHW. on: let "
+                             "inductor rewrite them to channels-last, which is its own "
+                             "default but costs this model 47 ms per pair under fp32 "
+                             "and gains nothing under the other precision modes (table "
+                             "in this script's docstring).")
     parser.add_argument("--clean", action="store_true",
                         help="empty the build directory first")
     parser.add_argument("--skip_check", action="store_true",
@@ -138,11 +170,14 @@ def main() -> int:
         print("  WARNING: a cudnn op is in the graph; it will go through the proxy "
               "executor (see utils/export_compat.py)")
 
-    print(f"compiling -> {output} (a couple of minutes) ...")
+    layout_optimization = args.layout_optimization == "on"
+    print(f"compiling -> {output}, layout optimization {args.layout_optimization} "
+          f"(a couple of minutes) ...")
     started = time.time()
     with torch.no_grad():
         package = Path(torch._inductor.aoti_compile_and_package(
             exported, package_path=str(output),
+            inductor_configs={"layout_optimization": layout_optimization},
         ))
     print(f"  compiled in {time.time() - started:.0f}s "
           f"({package.stat().st_size / 2**20:.0f} MiB)")
@@ -164,7 +199,7 @@ def main() -> int:
                   f"against eager under fp32 -- that is not rounding noise, the build "
                   f"is suspect")
 
-    common.write_manifest(build_dir, output.name, args, inputs, check)
+    common.write_manifest(build_dir, output.name, args, inputs, check, layout_optimization)
     audit(package)
 
     print(f"\nbuild directory: {build_dir}")
