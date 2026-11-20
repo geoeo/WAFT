@@ -98,12 +98,12 @@ The flow network can be compiled ahead of time with `torch.export` + AOTInductor
 devcontainer exec --workspace-folder . bash scripts/run_aot_export_chain.sh
 ```
 
-(inside the container: `bash scripts/run_aot_export_chain.sh`). The [script](scripts/run_aot_export_chain.sh) uses GPU 0 and `/opt/conda/envs/waft/bin/python`; set `PYTHON` to use another interpreter. It builds for 640x480 images; set `RESOLUTION` (e.g. `RESOLUTION=1024x768`) for another size, which resizes the pairs and moves the build to `outputs/aoti/<RESOLUTION>/`. All four steps run under `--precision fp32`; pass `--precision tf32` or `--precision default` to the script to run them under another float32 mode (the package itself does not depend on it, see below). It works from any working directory, stops if a step fails, and replaces what earlier runs left at its output locations. Its four steps are also available as VS Code launch configurations:
+(inside the container: `bash scripts/run_aot_export_chain.sh`). The [script](scripts/run_aot_export_chain.sh) uses GPU 0 and `/opt/conda/envs/waft/bin/python`; set `PYTHON` to use another interpreter. It builds for 640x480 images; set `RESOLUTION` (e.g. `RESOLUTION=1024x768`) for another size, which resizes the pairs and moves the build to `outputs/aoti/fp32_<RESOLUTION>/`. All four steps run under `--precision fp32`; pass `--precision tf32` or `--precision default` to the script to run them under another float32 mode. The build directory carries that mode in its name, `outputs/aoti/<precision>_<RESOLUTION>/`, although the package itself does not depend on it (see below). It works from any working directory, stops if a step fails, and replaces what earlier runs left at its output locations. Its four steps are also available as VS Code launch configurations:
 
 | Step | Script | Writes |
 |---|---|---|
-| Export Dataset (.pt2) | `scripts/export_dataset.py` | `outputs/dataset_flow_realm_1_100m.pt2`: the first 3 keyframe pairs of `custom/realm_1_100m_w_tandem`, resized to 640x480, as input tensors, plus the eager model's flow for them |
-| AOT Compile Flow | `scripts/aot_compile_flow.py` | `outputs/aoti/640x480/waft_flow.pt2` and a `build_info.json` beside it (image size, model, torch version) |
+| Export Dataset (.pt2) | `scripts/export_dataset.py` | `outputs/dataset_flow_realm_1_100m_fp32.pt2` (the name ends in the `--precision` the chain ran under, since the stored eager flow depends on it): the first 3 keyframe pairs of `custom/realm_1_100m_w_tandem`, resized to 640x480, as input tensors, plus the eager model's flow for them |
+| AOT Compile Flow | `scripts/aot_compile_flow.py` | `outputs/aoti/fp32_640x480/waft_flow.pt2` and a `build_info.json` beside it (image size, model, torch version) |
 | Run Flow Package | `scripts/run_flow_aoti.py` | `outputs/aoti_flow/`: raw flow, flow visualisation and uncertainty heatmap per pair; prints timing and the difference to the eager model |
 | Evaluate Flow Package | `scripts/evaluate_flow_aoti.py` | prints the package's difference to the eager flow stored in the snapshot |
 

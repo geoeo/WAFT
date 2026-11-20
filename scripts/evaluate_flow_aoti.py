@@ -3,7 +3,7 @@
 
 Example:
     python scripts/evaluate_flow_aoti.py \
-        --package outputs/aoti/640x480/waft_flow.pt2 \
+        --package outputs/aoti/fp32_640x480/waft_flow.pt2 \
         --dataset_pt2 outputs/dataset_flow.pt2
 
 The reference is `flow_eager` / `info_eager`: what the eager Python model produced for

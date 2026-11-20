@@ -8,7 +8,10 @@
 The first selected pair becomes the tracing example. Its size is baked into the graph,
 together with the batch size of 1 and the number of refinement iterations, so a package
 accepts exactly one image size: compile one per resolution, with --resolution. The
-default build directory is named after it, outputs/aoti/<width>x<height>/.
+default build directory is named after it and after --precision,
+outputs/aoti/<precision>_<width>x<height>/, e.g. outputs/aoti/fp32_640x480/. The
+precision in that name is the mode the build was made and checked under; it is not a
+property of the package inside (see below).
 
 The example's memory layout is baked in as well, and unlike the size it is not checked
 at run time: the package must be given contiguous [1, 3, H, W] tensors, which is what
@@ -125,7 +128,7 @@ def main() -> int:
     common.add_precision_arg(parser)
     parser.add_argument("--output_dir", type=Path, default=None,
                         help="build directory, created if absent (default: "
-                             "outputs/aoti/<width>x<height>/). Holds the waft_flow.pt2 "
+                             "outputs/aoti/<precision>_<width>x<height>/). Holds the waft_flow.pt2 "
                              "package and its build_info.json; the package alone is "
                              "enough to run inference and can be copied anywhere.")
     parser.add_argument("--layout_optimization", choices=["on", "off"], default="off",
@@ -147,7 +150,7 @@ def main() -> int:
 
     height, width = inputs[0].shape[-2:]
     build_dir = (args.output_dir
-                 or common.REPO_ROOT / "outputs" / "aoti" / f"{width}x{height}").resolve()
+                 or common.REPO_ROOT / "outputs" / "aoti" / f"{precision}_{width}x{height}").resolve()
     if args.clean:
         clean_output(build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)

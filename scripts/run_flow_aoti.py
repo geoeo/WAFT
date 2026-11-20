@@ -4,7 +4,7 @@
 Takes the same pair-selection arguments as the other export scripts:
 
     python scripts/run_flow_aoti.py \
-        --package outputs/aoti/640x480/waft_flow.pt2 \
+        --package outputs/aoti/fp32_640x480/waft_flow.pt2 \
         --data_root custom/realm_1_100m_w_tandem
 
     python scripts/run_flow_aoti.py --package ... \

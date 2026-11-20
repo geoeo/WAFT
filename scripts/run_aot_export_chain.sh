@@ -16,7 +16,7 @@
 #
 # The image size the package is built for defaults to 640x480; set RESOLUTION
 # (WIDTHxHEIGHT) for another one. The pairs are resized to it, and the build goes to
-# outputs/aoti/<RESOLUTION>/.
+# outputs/aoti/<precision>_<RESOLUTION>/, by default outputs/aoti/fp32_640x480/.
 set -euo pipefail
 
 precision="fp32"
@@ -50,9 +50,11 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 python="${PYTHON:-/opt/conda/envs/waft/bin/python}"
-dataset_pt2="$repo_root/outputs/dataset_flow_realm_1_100m.pt2"
+# The snapshot holds the eager model's flow, which depends on the precision, so each
+# mode gets its own file and the modes do not overwrite each other's reference.
+dataset_pt2="$repo_root/outputs/dataset_flow_realm_1_100m_${precision}.pt2"
 resolution="${RESOLUTION:-640x480}"
-build_dir="$repo_root/outputs/aoti/$resolution"
+build_dir="$repo_root/outputs/aoti/${precision}_$resolution"
 export CUDA_VISIBLE_DEVICES=0
 
 echo "[1/4] Export Dataset (.pt2) at $resolution, precision $precision"

@@ -23,7 +23,7 @@
             // three configurations below: scripts/run_aot_export_chain.sh
             // --resolution here decides the image size of everything downstream: the
             // configurations below read the pairs from this snapshot, so to change it,
-            // change it here and in their outputs/aoti/640x480 paths.
+            // change it here and in their outputs/aoti/fp32_640x480 paths.
             "name": "Export Dataset (.pt2)",
             "type": "debugpy",
             "request": "launch",
@@ -38,9 +38,10 @@
             "args": [
                 "--data_root", "${workspaceFolder}/custom/realm_1_100m_w_tandem",
                 "--resolution", "640x480",
+                "--precision", "fp32",
                 "--offset", "0",
                 "--count", "3",
-                "--output", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m.pt2"
+                "--output", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m_fp32.pt2"
             ]
         },
         {
@@ -63,13 +64,13 @@
                 "PYDEVD_USE_SYS_MONITORING": "0"
             },
             "args": [
-                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m.pt2",
+                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m_fp32.pt2",
                 "--output", "${workspaceFolder}/outputs/waft_flow.pt2"
             ]
         },
         {
             // Step 1/2: compile to a self-contained AOTInductor .pt2 package, about
-            // 1.5 minutes. Writes outputs/aoti/640x480/ plus a build_info.json
+            // 1.5 minutes. Writes outputs/aoti/fp32_640x480/ plus a build_info.json
             // recording the image size, the model and the torch version the package
             // is locked to.
             "name": "AOT Compile Flow",
@@ -85,8 +86,8 @@
                 "PYDEVD_USE_SYS_MONITORING": "0"
             },
             "args": [
-                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m.pt2",
-                "--output_dir", "${workspaceFolder}/outputs/aoti/640x480",
+                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m_fp32.pt2",
+                "--output_dir", "${workspaceFolder}/outputs/aoti/fp32_640x480",
                 "--clean"
             ]
         },
@@ -106,8 +107,8 @@
                 "CUDA_VISIBLE_DEVICES": "0"
             },
             "args": [
-                "--package", "${workspaceFolder}/outputs/aoti/640x480/waft_flow.pt2",
-                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m.pt2",
+                "--package", "${workspaceFolder}/outputs/aoti/fp32_640x480/waft_flow.pt2",
+                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m_fp32.pt2",
                 "--benchmark", "--bench_iters", "8",
                 "--compare_eager",
                 "--output_dir", "${workspaceFolder}/outputs/aoti_flow",
@@ -129,8 +130,8 @@
                 "CUDA_VISIBLE_DEVICES": "0"
             },
             "args": [
-                "--package", "${workspaceFolder}/outputs/aoti/640x480/waft_flow.pt2",
-                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m.pt2"
+                "--package", "${workspaceFolder}/outputs/aoti/fp32_640x480/waft_flow.pt2",
+                "--dataset_pt2", "${workspaceFolder}/outputs/dataset_flow_realm_1_100m_fp32.pt2"
             ]
         }
     ]
